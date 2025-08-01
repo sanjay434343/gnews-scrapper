@@ -188,107 +188,212 @@ function extractCategory($, url) {
 // Site-specific selectors for popular Indian news sites
 const siteSelectors = {
   'ndtv.com': {
-    title: 'h1, .ins_storybody h1, .story-title',
-    subtitle: '.intro, .story-intro, .summary',
-    content: '.ins_storybody, .story-content, .article-content',
+    title: 'h1.ins_story-headline, h1, .ins_storybody h1, .story-title',
+    subtitle: '.intro, .story-intro, .summary, .ins_story-summary',
+    content: '.ins_storybody, .story-content, .article-content, .ins_story-content',
   },
   'timesofindia.indiatimes.com': {
-    title: 'h1, .headline, ._3YYSt',
-    subtitle: '.synopsis, .summary, ._1Y9nQ',
-    content: '.Normal, ._3WlLe, .story-content',
+    title: 'h1, .headline, ._3YYSt, .HNMDR',
+    subtitle: '.synopsis, .summary, ._1Y9nQ, .yJ3wK',
+    content: '.Normal, ._3WlLe, .story-content, .ga-headlines',
   },
   'news18.com': {
-    title: 'h1, .article-title, .story-kicker',
-    subtitle: '.article-excerpt, .story-excerpt',
-    content: '.article-content, .story-content, .jsx-parser',
+    title: 'h1, .article-title, .story-kicker, .jsx-1159aa8b-ArticleSchema',
+    subtitle: '.article-excerpt, .story-excerpt, .jsx-1159aa8b-ArticleSchema p',
+    content: '.article-content, .story-content, .jsx-parser, .jsx-1159aa8b-ArticleSchema div',
   },
   'hindustantimes.com': {
-    title: 'h1, .headline, .story-title',
-    subtitle: '.stand-first, .story-summary',
-    content: '.story-details, .detail-body',
+    title: 'h1, .headline, .story-title, .hdg1',
+    subtitle: '.stand-first, .story-summary, .detail-summary',
+    content: '.story-details, .detail-body, .story-element-text',
   },
   'indianexpress.com': {
-    title: 'h1, .native_story_title, .story-title',
-    subtitle: '.synopsis, .story-summary',
-    content: '.full-details, .story-element-text',
+    title: 'h1, .native_story_title, .story-title, .heading1',
+    subtitle: '.synopsis, .story-summary, .custom-caption',
+    content: '.full-details, .story-element-text, .ie-contentbox',
+  },
+  'thehindu.com': {
+    title: 'h1, .title, .article-title',
+    subtitle: '.intro, .subhead, .article-intro',
+    content: '.content, .paywall, .article-content p',
+  },
+  'indiatimes.com': {
+    title: 'h1, .article_title, .story-title',
+    subtitle: '.article_summary, .story-intro',
+    content: '.article_content, .story-content',
   }
 };
 
-// Main scraping function
+// User agent rotation
+const userAgents = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+];
+
+// Get random user agent
+function getRandomUserAgent() {
+  return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
+
+// Enhanced request headers
+function getRequestHeaders(url) {
+  const hostname = new URL(url).hostname;
+  
+  return {
+    'User-Agent': getRandomUserAgent(),
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Cache-Control': 'max-age=0',
+    'Referer': `https://${hostname}/`,
+    'Origin': `https://${hostname}`
+  };
+}
+
+// Main scraping function with retry logic
 async function scrapeArticle(url) {
+  const maxRetries = 3;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Attempt ${attempt} for ${url}`);
+      
+      // Add delay between retries
+      if (attempt > 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      }
+
+      // Fetch the webpage
+      const response = await axios.get(url, {
+        timeout: 15000,
+        headers: getRequestHeaders(url),
+        maxRedirects: 5,
+        validateStatus: function (status) {
+          return status >= 200 && status < 300;
+        }
+      });
+
+      const $ = cheerio.load(response.data);
+      const hostname = new URL(url).hostname;
+      
+      // Check if we got a valid HTML response
+      if (!response.data || response.data.length < 100) {
+        throw new Error('Received empty or invalid response');
+      }
+
+      // Check for common blocking patterns
+      const bodyText = $('body').text().toLowerCase();
+      if (bodyText.includes('access denied') || bodyText.includes('blocked') || bodyText.includes('captcha')) {
+        throw new Error('Access blocked by website');
+      }
+      
+      // Get site-specific selectors or use defaults
+      const selectors = siteSelectors[hostname] || {};
+      
+      // Extract title
+      const titleSelectors = selectors.title ? [selectors.title] : [
+        'h1',
+        '.article-title',
+        '.story-title',
+        '.headline',
+        'title'
+      ];
+      const title = extractCleanText($, titleSelectors) || $('title').text().trim();
+
+      // Extract subtitle
+      const subtitleSelectors = selectors.subtitle ? [selectors.subtitle] : [
+        '.subtitle',
+        '.article-subtitle',
+        '.story-summary',
+        '.excerpt',
+        '.intro',
+        '.lead'
+      ];
+      const subtitle = extractCleanText($, subtitleSelectors);
+
+      // Extract main content
+      const contentSelectors = selectors.content ? [selectors.content] : [
+        '.article-content',
+        '.story-content',
+        '.content',
+        '.post-content',
+        '.entry-content',
+        '[data-module="ArticleBody"]',
+        '.article-body',
+        'main p'
+      ];
+      const content = extractCleanText($, contentSelectors);
+
+      // Validate that we extracted meaningful content
+      if (!title && !content) {
+        throw new Error('No meaningful content found - possible blocking or invalid page');
+      }
+
+      // Extract other fields
+      const images = extractImages($, url);
+      const timestamp = extractTimestamp($);
+      const location = extractLocation($, content);
+      const category = extractCategory($, url);
+
+      return {
+        success: true,
+        data: {
+          url,
+          title: title || null,
+          subtitle: subtitle || null,
+          content: content || null,
+          images: images.length > 0 ? images : null,
+          timestamp,
+          location,
+          category,
+          scraped_at: new Date().toISOString()
+        }
+      };
+
+    } catch (error) {
+      lastError = error;
+      console.log(`Attempt ${attempt} failed:`, error.message);
+      
+      // Don't retry on certain errors
+      if (error.response?.status === 404 || error.message.includes('Invalid URL')) {
+        break;
+      }
+    }
+  }
+
+  throw new Error(`Scraping failed after ${maxRetries} attempts: ${lastError.message}`);
+}
+
+// Alternative scraping method using different approach
+async function tryAlternativeScraping(url) {
   try {
-    // Fetch the webpage
+    // Try with minimal headers first
     const response = await axios.get(url, {
-      timeout: 10000,
+      timeout: 15000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'curl/7.68.0'
       }
     });
 
-    const $ = cheerio.load(response.data);
-    const hostname = new URL(url).hostname;
-    
-    // Get site-specific selectors or use defaults
-    const selectors = siteSelectors[hostname] || {};
-    
-    // Extract title
-    const titleSelectors = selectors.title ? [selectors.title] : [
-      'h1',
-      '.article-title',
-      '.story-title',
-      '.headline',
-      'title'
-    ];
-    const title = extractCleanText($, titleSelectors) || $('title').text().trim();
-
-    // Extract subtitle
-    const subtitleSelectors = selectors.subtitle ? [selectors.subtitle] : [
-      '.subtitle',
-      '.article-subtitle',
-      '.story-summary',
-      '.excerpt',
-      '.intro',
-      '.lead'
-    ];
-    const subtitle = extractCleanText($, subtitleSelectors);
-
-    // Extract main content
-    const contentSelectors = selectors.content ? [selectors.content] : [
-      '.article-content',
-      '.story-content',
-      '.content',
-      '.post-content',
-      '.entry-content',
-      '[data-module="ArticleBody"]',
-      '.article-body',
-      'main p'
-    ];
-    const content = extractCleanText($, contentSelectors);
-
-    // Extract other fields
-    const images = extractImages($, url);
-    const timestamp = extractTimestamp($);
-    const location = extractLocation($, content);
-    const category = extractCategory($, url);
-
-    return {
-      success: true,
-      data: {
-        url,
-        title: title || null,
-        subtitle: subtitle || null,
-        content: content || null,
-        images: images.length > 0 ? images : null,
-        timestamp,
-        location,
-        category,
-        scraped_at: new Date().toISOString()
-      }
-    };
-
+    if (response.data && response.data.length > 100) {
+      return response.data;
+    }
   } catch (error) {
-    throw new Error(`Scraping failed: ${error.message}`);
+    console.log('Alternative method failed:', error.message);
   }
+  
+  return null;
 }
 
 // Main API route
@@ -312,16 +417,74 @@ app.get('/api/scrape', async (req, res) => {
       });
     }
 
-    // Scrape the article
-    const result = await scrapeArticle(url);
+    // Try to scrape the article
+    let result;
+    try {
+      result = await scrapeArticle(url);
+    } catch (primaryError) {
+      console.log('Primary scraping failed, trying alternative method...');
+      
+      // Try alternative scraping method
+      const alternativeData = await tryAlternativeScraping(url);
+      if (alternativeData) {
+        const $ = cheerio.load(alternativeData);
+        const hostname = new URL(url).hostname;
+        const selectors = siteSelectors[hostname] || {};
+        
+        const title = extractCleanText($, selectors.title ? [selectors.title] : ['h1', 'title']) || $('title').text().trim();
+        const content = extractCleanText($, selectors.content ? [selectors.content] : ['.article-content', '.content', 'main p']);
+        
+        if (title || content) {
+          result = {
+            success: true,
+            data: {
+              url,
+              title: title || null,
+              subtitle: null,
+              content: content || null,
+              images: extractImages($, url),
+              timestamp: extractTimestamp($),
+              location: extractLocation($, content || ''),
+              category: extractCategory($, url),
+              scraped_at: new Date().toISOString(),
+              method: 'alternative'
+            }
+          };
+        } else {
+          throw primaryError;
+        }
+      } else {
+        throw primaryError;
+      }
+    }
     
     res.json(result);
 
   } catch (error) {
     console.error('Scraping error:', error);
-    res.status(500).json({
+    
+    // Provide more specific error messages
+    let errorMessage = error.message || 'Internal server error';
+    let statusCode = 500;
+    
+    if (error.response?.status === 403) {
+      errorMessage = 'Access denied by website. The site may be blocking automated requests.';
+      statusCode = 403;
+    } else if (error.response?.status === 404) {
+      errorMessage = 'Article not found. Please check the URL.';
+      statusCode = 404;
+    } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+      errorMessage = 'Unable to connect to the website. Please check the URL.';
+      statusCode = 400;
+    } else if (error.message.includes('timeout')) {
+      errorMessage = 'Request timeout. The website took too long to respond.';
+      statusCode = 408;
+    }
+
+    res.status(statusCode).json({
       success: false,
-      error: error.message || 'Internal server error'
+      error: errorMessage,
+      url: req.query.url || null
     });
   }
 });
