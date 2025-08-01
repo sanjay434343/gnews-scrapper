@@ -24,388 +24,268 @@ function isValidUrl(string) {
   }
 }
 
-// Extract clean text content
-function extractCleanText($, selectors) {
-  for (const selector of selectors) {
-    const elements = $(selector);
-    if (elements.length > 0) {
-      // Remove unwanted elements
-      elements.find('script, style, nav, header, footer, .advertisement, .ads, .social-share').remove();
-      
-      let text = '';
-      elements.each((i, el) => {
-        text += $(el).text().trim() + ' ';
-      });
-      
-      return text.trim().replace(/\s+/g, ' ');
-    }
-  }
-  return '';
-}
-
-// Extract images
-function extractImages($, baseUrl) {
-  const images = [];
-  const imgSelectors = [
-    'img[src*="content"]',
-    'img[src*="image"]',
-    'img[src*="photo"]',
-    '.article-image img',
-    '.story-image img',
-    '.content-image img',
-    'img'
-  ];
-
-  imgSelectors.forEach(selector => {
-    $(selector).each((i, el) => {
-      const src = $(el).attr('src') || $(el).attr('data-src');
-      if (src && !src.includes('logo') && !src.includes('icon') && !src.includes('placeholder')) {
-        try {
-          const fullUrl = new URL(src, baseUrl).href;
-          if (!images.includes(fullUrl)) {
-            images.push(fullUrl);
-          }
-        } catch (e) {
-          // Skip invalid URLs
-        }
-      }
-    });
-  });
-
-  return images;
-}
-
-// Extract timestamp
-function extractTimestamp($) {
-  const timeSelectors = [
-    'time[datetime]',
-    '.timestamp',
-    '.published-date',
-    '.article-date',
-    '.story-date',
-    '.date-time',
-    '[data-date]',
-    '.byline time'
-  ];
-
-  for (const selector of timeSelectors) {
-    const element = $(selector).first();
-    if (element.length > 0) {
-      const datetime = element.attr('datetime') || element.attr('data-date') || element.text().trim();
-      if (datetime) {
-        const date = new Date(datetime);
-        if (!isNaN(date.getTime())) {
-          return date.toISOString();
-        }
-      }
-    }
-  }
-
-  // Try to extract from URL or meta tags
-  const metaDate = $('meta[property="article:published_time"]').attr('content') ||
-                  $('meta[name="publishdate"]').attr('content') ||
-                  $('meta[name="date"]').attr('content');
-  
-  if (metaDate) {
-    const date = new Date(metaDate);
-    if (!isNaN(date.getTime())) {
-      return date.toISOString();
-    }
-  }
-
-  return null;
-}
-
-// Extract location
-function extractLocation($, content) {
-  // Look for location in specific elements
-  const locationSelectors = [
-    '.dateline',
-    '.location',
-    '.article-location',
-    '.story-location'
-  ];
-
-  for (const selector of locationSelectors) {
-    const locationText = $(selector).first().text().trim();
-    if (locationText) {
-      return locationText;
-    }
-  }
-
-  // Extract from content using common Indian cities/states
-  const indianLocations = [
-    'Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata', 'Pune', 'Ahmedabad',
-    'Jaipur', 'Lucknow', 'Kanpur', 'Nagpur', 'Indore', 'Bhopal', 'Visakhapatnam', 'Patna',
-    'Maharashtra', 'Karnataka', 'Andhra Pradesh', 'Tamil Nadu', 'Gujarat', 'Rajasthan',
-    'West Bengal', 'Madhya Pradesh', 'Uttar Pradesh', 'Odisha', 'Kerala', 'Punjab', 'Haryana'
-  ];
-
-  for (const location of indianLocations) {
-    if (content.toLowerCase().includes(location.toLowerCase())) {
-      return location;
-    }
-  }
-
-  return null;
-}
-
-// Extract category/topic
-function extractCategory($, url) {
-  // Try breadcrumbs first
-  const breadcrumbs = $('.breadcrumb a, .breadcrumbs a, nav a').map((i, el) => $(el).text().trim()).get();
-  if (breadcrumbs.length > 1) {
-    return breadcrumbs[breadcrumbs.length - 2]; // Second to last breadcrumb is usually the category
-  }
-
-  // Try URL path
-  try {
-    const urlPath = new URL(url).pathname;
-    const pathSegments = urlPath.split('/').filter(segment => segment.length > 0);
-    const possibleCategories = ['sports', 'politics', 'business', 'technology', 'entertainment', 'health', 'education', 'world'];
-    
-    for (const segment of pathSegments) {
-      if (possibleCategories.includes(segment.toLowerCase())) {
-        return segment.charAt(0).toUpperCase() + segment.slice(1);
-      }
-    }
-  } catch (e) {
-    // Skip if URL parsing fails
-  }
-
-  // Try meta tags
-  const metaCategory = $('meta[property="article:section"]').attr('content') ||
-                      $('meta[name="section"]').attr('content') ||
-                      $('meta[name="category"]').attr('content');
-  
-  if (metaCategory) {
-    return metaCategory;
-  }
-
-  return null;
-}
-
-// Site-specific selectors for popular Indian news sites
-const siteSelectors = {
-  'ndtv.com': {
-    title: 'h1.ins_story-headline, h1, .ins_storybody h1, .story-title',
-    subtitle: '.intro, .story-intro, .summary, .ins_story-summary',
-    content: '.ins_storybody, .story-content, .article-content, .ins_story-content',
-  },
-  'timesofindia.indiatimes.com': {
-    title: 'h1, .headline, ._3YYSt, .HNMDR',
-    subtitle: '.synopsis, .summary, ._1Y9nQ, .yJ3wK',
-    content: '.Normal, ._3WlLe, .story-content, .ga-headlines',
-  },
-  'news18.com': {
-    title: 'h1, .article-title, .story-kicker, .jsx-1159aa8b-ArticleSchema',
-    subtitle: '.article-excerpt, .story-excerpt, .jsx-1159aa8b-ArticleSchema p',
-    content: '.article-content, .story-content, .jsx-parser, .jsx-1159aa8b-ArticleSchema div',
-  },
-  'hindustantimes.com': {
-    title: 'h1, .headline, .story-title, .hdg1',
-    subtitle: '.stand-first, .story-summary, .detail-summary',
-    content: '.story-details, .detail-body, .story-element-text',
-  },
-  'indianexpress.com': {
-    title: 'h1, .native_story_title, .story-title, .heading1',
-    subtitle: '.synopsis, .story-summary, .custom-caption',
-    content: '.full-details, .story-element-text, .ie-contentbox',
-  },
-  'thehindu.com': {
-    title: 'h1, .title, .article-title',
-    subtitle: '.intro, .subhead, .article-intro',
-    content: '.content, .paywall, .article-content p',
-  },
-  'indiatimes.com': {
-    title: 'h1, .article_title, .story-title',
-    subtitle: '.article_summary, .story-intro',
-    content: '.article_content, .story-content',
-  }
-};
-
-// User agent rotation
-const userAgents = [
+// Google News specific user agents that work better
+const googleNewsUserAgents = [
+  'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+  'Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/W.X.Y.Z‡ Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
 ];
 
-// Get random user agent
 function getRandomUserAgent() {
-  return userAgents[Math.floor(Math.random() * userAgents.length)];
+  return googleNewsUserAgents[Math.floor(Math.random() * googleNewsUserAgents.length)];
 }
 
-// Enhanced request headers
-function getRequestHeaders(url) {
-  const hostname = new URL(url).hostname;
-  
-  return {
-    'User-Agent': getRandomUserAgent(),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-    'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'DNT': '1',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1',
-    'Cache-Control': 'max-age=0',
-    'Referer': `https://${hostname}/`,
-    'Origin': `https://${hostname}`
-  };
+// Check if URL is Google News
+function isGoogleNewsUrl(url) {
+  return url.includes('news.google.com') || url.includes('google.com/url?');
 }
 
-// Main scraping function with retry logic
-async function scrapeArticle(url) {
-  const maxRetries = 3;
+// Extract actual article URL from Google News redirect
+function extractActualUrl(googleUrl) {
+  try {
+    const urlObj = new URL(googleUrl);
+    
+    // For Google News article URLs like: https://news.google.com/articles/...
+    if (urlObj.pathname.includes('/articles/')) {
+      return googleUrl; // Keep as is, will be handled specially
+    }
+    
+    // For Google redirect URLs like: https://www.google.com/url?url=...
+    const actualUrl = urlObj.searchParams.get('url') || urlObj.searchParams.get('q');
+    if (actualUrl) {
+      return decodeURIComponent(actualUrl);
+    }
+    
+    return googleUrl;
+  } catch (error) {
+    return googleUrl;
+  }
+}
+
+// Get Google News RSS feed
+async function getGoogleNewsRSS(query = 'india', lang = 'en', country = 'IN') {
+  try {
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${lang}&gl=${country}&ceid=${country}:${lang}`;
+    
+    const response = await axios.get(rssUrl, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': getRandomUserAgent(),
+        'Accept': 'application/rss+xml, application/xml, text/xml'
+      }
+    });
+
+    const $ = cheerio.load(response.data, { xmlMode: true });
+    const articles = [];
+
+    $('item').each((i, item) => {
+      const $item = $(item);
+      const title = $item.find('title').text().trim();
+      const link = $item.find('link').text().trim();
+      const description = $item.find('description').text().trim();
+      const pubDate = $item.find('pubDate').text().trim();
+      const source = $item.find('source').text().trim();
+
+      if (title && link) {
+        articles.push({
+          title,
+          link: extractActualUrl(link),
+          description: description || null,
+          published: pubDate || null,
+          source: source || null
+        });
+      }
+    });
+
+    return articles;
+  } catch (error) {
+    throw new Error(`Failed to fetch Google News RSS: ${error.message}`);
+  }
+}
+
+// Scrape article from original source
+async function scrapeOriginalArticle(url) {
+  const maxRetries = 2;
   let lastError;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`Attempt ${attempt} for ${url}`);
-      
-      // Add delay between retries
-      if (attempt > 1) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-      }
-
-      // Fetch the webpage
       const response = await axios.get(url, {
         timeout: 15000,
-        headers: getRequestHeaders(url),
-        maxRedirects: 5,
-        validateStatus: function (status) {
-          return status >= 200 && status < 300;
-        }
+        headers: {
+          'User-Agent': getRandomUserAgent(),
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'DNT': '1',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1'
+        },
+        maxRedirects: 5
       });
 
       const $ = cheerio.load(response.data);
-      const hostname = new URL(url).hostname;
       
-      // Check if we got a valid HTML response
-      if (!response.data || response.data.length < 100) {
-        throw new Error('Received empty or invalid response');
-      }
+      // Remove unwanted elements
+      $('script, style, nav, header, footer, .advertisement, .ads, .social-share, .related-articles').remove();
 
-      // Check for common blocking patterns
-      const bodyText = $('body').text().toLowerCase();
-      if (bodyText.includes('access denied') || bodyText.includes('blocked') || bodyText.includes('captcha')) {
-        throw new Error('Access blocked by website');
-      }
-      
-      // Get site-specific selectors or use defaults
-      const selectors = siteSelectors[hostname] || {};
-      
       // Extract title
-      const titleSelectors = selectors.title ? [selectors.title] : [
-        'h1',
-        '.article-title',
-        '.story-title',
-        '.headline',
-        'title'
-      ];
-      const title = extractCleanText($, titleSelectors) || $('title').text().trim();
+      const title = $('h1').first().text().trim() || 
+                   $('title').text().replace(/\s*\|\s*.*$/, '').trim() ||
+                   $('[property="og:title"]').attr('content') ||
+                   '';
 
-      // Extract subtitle
-      const subtitleSelectors = selectors.subtitle ? [selectors.subtitle] : [
-        '.subtitle',
-        '.article-subtitle',
-        '.story-summary',
-        '.excerpt',
-        '.intro',
-        '.lead'
+      // Extract content using multiple selectors
+      const contentSelectors = [
+        'article p',
+        '.article-content p',
+        '.story-content p',
+        '.content p',
+        '.post-content p',
+        '.entry-content p',
+        'main p',
+        '[data-module="ArticleBody"] p',
+        '.article-body p'
       ];
-      const subtitle = extractCleanText($, subtitleSelectors);
 
-      // Extract main content
-      const contentSelectors = selectors.content ? [selectors.content] : [
-        '.article-content',
-        '.story-content',
-        '.content',
-        '.post-content',
-        '.entry-content',
-        '[data-module="ArticleBody"]',
-        '.article-body',
-        'main p'
-      ];
-      const content = extractCleanText($, contentSelectors);
-
-      // Validate that we extracted meaningful content
-      if (!title && !content) {
-        throw new Error('No meaningful content found - possible blocking or invalid page');
+      let content = '';
+      for (const selector of contentSelectors) {
+        const paragraphs = $(selector);
+        if (paragraphs.length > 0) {
+          paragraphs.each((i, p) => {
+            const text = $(p).text().trim();
+            if (text.length > 20) { // Only include substantial paragraphs
+              content += text + '\n\n';
+            }
+          });
+          if (content.length > 100) break; // Stop if we found good content
+        }
       }
 
-      // Extract other fields
-      const images = extractImages($, url);
-      const timestamp = extractTimestamp($);
-      const location = extractLocation($, content);
-      const category = extractCategory($, url);
+      // Extract images
+      const images = [];
+      $('img').each((i, img) => {
+        const src = $(img).attr('src') || $(img).attr('data-src');
+        if (src && !src.includes('logo') && !src.includes('icon') && src.length > 20) {
+          try {
+            const fullUrl = new URL(src, url).href;
+            if (!images.includes(fullUrl)) {
+              images.push(fullUrl);
+            }
+          } catch (e) {
+            // Skip invalid URLs
+          }
+        }
+      });
+
+      // Extract timestamp
+      let timestamp = null;
+      const timeElement = $('time[datetime]').first();
+      if (timeElement.length) {
+        const datetime = timeElement.attr('datetime');
+        if (datetime) {
+          const date = new Date(datetime);
+          if (!isNaN(date.getTime())) {
+            timestamp = date.toISOString();
+          }
+        }
+      }
+
+      // Extract from meta tags if time element not found
+      if (!timestamp) {
+        const metaDate = $('meta[property="article:published_time"]').attr('content') ||
+                        $('meta[name="publishdate"]').attr('content');
+        if (metaDate) {
+          const date = new Date(metaDate);
+          if (!isNaN(date.getTime())) {
+            timestamp = date.toISOString();
+          }
+        }
+      }
 
       return {
-        success: true,
-        data: {
-          url,
-          title: title || null,
-          subtitle: subtitle || null,
-          content: content || null,
-          images: images.length > 0 ? images : null,
-          timestamp,
-          location,
-          category,
-          scraped_at: new Date().toISOString()
-        }
+        title: title || null,
+        content: content.trim() || null,
+        images: images.length > 0 ? images.slice(0, 5) : null, // Limit to 5 images
+        timestamp,
+        source_url: url
       };
 
     } catch (error) {
       lastError = error;
-      console.log(`Attempt ${attempt} failed:`, error.message);
-      
-      // Don't retry on certain errors
-      if (error.response?.status === 404 || error.message.includes('Invalid URL')) {
-        break;
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
   }
 
-  throw new Error(`Scraping failed after ${maxRetries} attempts: ${lastError.message}`);
+  throw lastError;
 }
 
-// Alternative scraping method using different approach
-async function tryAlternativeScraping(url) {
+// Main scraping function for Google News
+async function scrapeGoogleNews(url, options = {}) {
   try {
-    // Try with minimal headers first
-    const response = await axios.get(url, {
-      timeout: 15000,
-      headers: {
-        'User-Agent': 'curl/7.68.0'
-      }
-    });
-
-    if (response.data && response.data.length > 100) {
-      return response.data;
+    // If it's a Google News RSS request
+    if (url === 'rss' || url.includes('rss')) {
+      const articles = await getGoogleNewsRSS(options.query, options.lang, options.country);
+      return {
+        success: true,
+        data: {
+          type: 'rss_feed',
+          articles: articles.slice(0, 10), // Limit to 10 articles
+          total: articles.length,
+          scraped_at: new Date().toISOString()
+        }
+      };
     }
+
+    // Extract actual article URL if it's a Google News link
+    const actualUrl = extractActualUrl(url);
+    
+    // If it's still a Google News article URL, we need to get the RSS and find it
+    if (actualUrl.includes('news.google.com/articles/')) {
+      return {
+        success: false,
+        error: 'Direct Google News article URLs are not accessible. Please use the RSS feed option or provide the original article URL.'
+      };
+    }
+
+    // Scrape the actual article
+    const articleData = await scrapeOriginalArticle(actualUrl);
+    
+    return {
+      success: true,
+      data: {
+        type: 'article',
+        url: actualUrl,
+        original_google_url: url !== actualUrl ? url : null,
+        ...articleData,
+        scraped_at: new Date().toISOString()
+      }
+    };
+
   } catch (error) {
-    console.log('Alternative method failed:', error.message);
+    throw new Error(`Google News scraping failed: ${error.message}`);
   }
-  
-  return null;
 }
 
 // Main API route
 app.get('/api/scrape', async (req, res) => {
   try {
-    const { url } = req.query;
+    const { url, query = 'india', lang = 'en', country = 'IN', type = 'article' } = req.query;
 
-    // Validate URL parameter
+    // Handle RSS feed requests
+    if (type === 'rss' || url === 'rss') {
+      const result = await scrapeGoogleNews('rss', { query, lang, country });
+      return res.json(result);
+    }
+
+    // Validate URL parameter for article scraping
     if (!url) {
       return res.status(400).json({
         success: false,
-        error: 'URL parameter is required'
+        error: 'URL parameter is required. Use type=rss for RSS feed or provide a Google News URL.'
       });
     }
 
@@ -417,68 +297,25 @@ app.get('/api/scrape', async (req, res) => {
       });
     }
 
-    // Try to scrape the article
-    let result;
-    try {
-      result = await scrapeArticle(url);
-    } catch (primaryError) {
-      console.log('Primary scraping failed, trying alternative method...');
-      
-      // Try alternative scraping method
-      const alternativeData = await tryAlternativeScraping(url);
-      if (alternativeData) {
-        const $ = cheerio.load(alternativeData);
-        const hostname = new URL(url).hostname;
-        const selectors = siteSelectors[hostname] || {};
-        
-        const title = extractCleanText($, selectors.title ? [selectors.title] : ['h1', 'title']) || $('title').text().trim();
-        const content = extractCleanText($, selectors.content ? [selectors.content] : ['.article-content', '.content', 'main p']);
-        
-        if (title || content) {
-          result = {
-            success: true,
-            data: {
-              url,
-              title: title || null,
-              subtitle: null,
-              content: content || null,
-              images: extractImages($, url),
-              timestamp: extractTimestamp($),
-              location: extractLocation($, content || ''),
-              category: extractCategory($, url),
-              scraped_at: new Date().toISOString(),
-              method: 'alternative'
-            }
-          };
-        } else {
-          throw primaryError;
-        }
-      } else {
-        throw primaryError;
-      }
-    }
-    
+    // Scrape the article
+    const result = await scrapeGoogleNews(url);
     res.json(result);
 
   } catch (error) {
     console.error('Scraping error:', error);
     
-    // Provide more specific error messages
     let errorMessage = error.message || 'Internal server error';
     let statusCode = 500;
     
     if (error.response?.status === 403) {
-      errorMessage = 'Access denied by website. The site may be blocking automated requests.';
+      errorMessage = 'Access denied. The article source may be blocking requests.';
       statusCode = 403;
     } else if (error.response?.status === 404) {
-      errorMessage = 'Article not found. Please check the URL.';
+      errorMessage = 'Article not found.';
       statusCode = 404;
-    } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-      errorMessage = 'Unable to connect to the website. Please check the URL.';
+    } else if (error.code === 'ENOTFOUND') {
+      errorMessage = 'Unable to connect to the source website.';
       statusCode = 400;
-    } else if (error.message.includes('timeout')) {
-      errorMessage = 'Request timeout. The website took too long to respond.';
-      statusCode = 408;
     }
 
     res.status(statusCode).json({
@@ -489,16 +326,45 @@ app.get('/api/scrape', async (req, res) => {
   }
 });
 
+// Google News RSS endpoint
+app.get('/api/news', async (req, res) => {
+  try {
+    const { query = 'india', lang = 'en', country = 'IN', limit = 10 } = req.query;
+    
+    const articles = await getGoogleNewsRSS(query, lang, country);
+    
+    res.json({
+      success: true,
+      data: {
+        query,
+        articles: articles.slice(0, parseInt(limit)),
+        total: articles.length,
+        scraped_at: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('RSS fetch error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+  res.json({ 
+    status: 'OK', 
+    service: 'Google News Scraper',
+    timestamp: new Date().toISOString() 
+  });
 });
 
 // For local development
 if (process.env.NODE_ENV !== 'production') {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Google News Scraper running on port ${PORT}`);
   });
 }
 
