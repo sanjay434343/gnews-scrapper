@@ -1,81 +1,47 @@
-import axios from 'axios';
-import cheerio from 'cheerio';
-
-const extractFullArticle = async (url) => {
-  try {
-    const { data } = await axios.get(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    const $ = cheerio.load(data);
-    const paragraphs = $('article p').map((i, el) => $(el).text()).get();
-    const images = $('article img').map((i, el) => $(el).attr('src')).get();
-
-    const content = paragraphs.join('\n').trim();
-    const image = images.find(img => img?.startsWith('http')) || null;
-
-    return { content, image };
-  } catch (err) {
-    console.error("Failed to extract article:", err.message);
-    return { content: '', image: null };
-  }
-};
-
-const extractGoogleNews = async (query) => {
-  const url = `https://news.google.com/search?q=${encodeURIComponent(query)}&hl=en-IN&gl=IN&ceid=IN:en`;
-
-  try {
-    const { data } = await axios.get(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-
-    const $ = cheerio.load(data);
-    const articles = [];
-
-    $('article').each((_, el) => {
-      const anchor = $(el).find('h3 a').attr('href');
-      const fullLink = anchor?.startsWith('/articles/') ? `https://news.google.com${anchor}` : null;
-      const title = $(el).find('h3').text().trim();
-      const source = $(el).find('div span').first().text().trim();
-      const time = $(el).find('time').attr('datetime');
-
-      if (title && fullLink) {
-        articles.push({ title, source, time, gnews_url: fullLink });
-      }
-    });
-
-    return articles;
-  } catch (err) {
-    console.error("Error fetching Google News:", err.message);
-    return [];
-  }
-};
-
-const resolveGoogleRedirect = async (gnews_url) => {
-  try {
-    const { data } = await axios.get(gnews_url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-
-    const $ = cheerio.load(data);
-    const realUrl = $('meta[http-equiv="refresh"]').attr('content')?.split('url=')[1];
-    return realUrl || gnews_url;
-  } catch {
-    return gnews_url;
-  }
-};
+// File: api/scraper.js
+import axios from "axios";
+import * as cheerio from "cheerio";
 
 export default async function handler(req, res) {
   const { q } = req.query;
-  if (!q) return res.status(400).json({ error: 'Missing query param ?q=' });
 
-  const basicResults = await extractGoogleNews(q);
-  const resultsWithContent = await Promise.all(
-    basicResults.slice(0, 5).map(async (article) => {
-      const resolvedUrl = await resolveGoogleRedirect(article.gnews_url);
-      const { content, image } = await extractFullArticle(resolvedUrl);
-      return { ...article, resolvedUrl, content, image };
-    })
-  );
+  if (!q) {
+    return res.status(400).json({ error: "Missing 'q' query parameter" });
+  }
 
-  res.status(200).json(resultsWithContent);
+  const searchUrl = `https://news.google.com/search?q=${encodeURIComponent(q)}&hl=en-IN&gl=IN&ceid=IN:en`;
+
+  try {
+    const response = await axios.get(searchUrl);
+    const $ = cheerio.load(response.data);
+
+    const articles = [];
+
+    $("article").each((_, el) => {
+      const title = $(el).find("h3, h4").text();
+      const linkPart = $(el).find("a").attr("href");
+      const link = linkPart
+        ? "https://news.google.com" + linkPart.replace("./", "/")
+        : null;
+
+      const source = $(el).find("div[role='heading']").text().trim() || "Unknown";
+      const time = $(el).find("time").attr("datetime") || "";
+
+      if (title && link) {
+        articles.push({ title, link, source, time });
+      }
+    });
+
+    return res.status(200).json({
+      status: "success",
+      query: q,
+      totalResults: articles.length,
+      articles,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: "Failed to fetch news",
+      details: err.message,
+    });
+  }
 }
