@@ -63,8 +63,53 @@ function extractActualUrl(googleUrl) {
   }
 }
 
-// Get Google News RSS feed
-async function getGoogleNewsRSS(query = 'india', lang = 'en', country = 'IN') {
+// Extract actual article URL from Google News redirect
+function extractRealArticleUrl(googleUrl) {
+  try {
+    // Google News RSS links are encoded - we need to decode them
+    if (googleUrl.includes('news.google.com/rss/articles/')) {
+      // These are Google News internal URLs, we'll need to resolve them
+      return googleUrl;
+    }
+    
+    const urlObj = new URL(googleUrl);
+    const actualUrl = urlObj.searchParams.get('url') || urlObj.searchParams.get('q');
+    if (actualUrl) {
+      return decodeURIComponent(actualUrl);
+    }
+    
+    return googleUrl;
+  } catch (error) {
+    return googleUrl;
+  }
+}
+
+// Resolve Google News URL to actual article URL
+async function resolveGoogleNewsUrl(googleUrl) {
+  try {
+    const response = await axios.get(googleUrl, {
+      timeout: 10000,
+      maxRedirects: 0, // Don't follow redirects automatically
+      validateStatus: status => status >= 200 && status < 400
+    });
+    
+    // Check for redirect in response
+    const location = response.headers.location;
+    if (location) {
+      return location;
+    }
+    
+    return googleUrl;
+  } catch (error) {
+    if (error.response && error.response.headers.location) {
+      return error.response.headers.location;
+    }
+    return googleUrl;
+  }
+}
+
+// Get Google News RSS feed with full content
+async function getGoogleNewsRSS(query = 'india', lang = 'en', country = 'IN', includeContent = true) {
   try {
     const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${lang}&gl=${country}&ceid=${country}:${lang}`;
     
@@ -79,24 +124,63 @@ async function getGoogleNewsRSS(query = 'india', lang = 'en', country = 'IN') {
     const $ = cheerio.load(response.data, { xmlMode: true });
     const articles = [];
 
-    $('item').each((i, item) => {
-      const $item = $(item);
-      const title = $item.find('title').text().trim();
-      const link = $item.find('link').text().trim();
-      const description = $item.find('description').text().trim();
-      const pubDate = $item.find('pubDate').text().trim();
-      const source = $item.find('source').text().trim();
+    // Process each RSS item
+    const items = $('item').slice(0, 10); // Limit to 10 articles for performance
+    
+    for (let i = 0; i < items.length; i++) {
+      const item = items.eq(i);
+      const title = item.find('title').text().trim();
+      const link = item.find('link').text().trim();
+      const description = item.find('description').text().trim();
+      const pubDate = item.find('pubDate').text().trim();
+      const source = item.find('source').text().trim();
 
       if (title && link) {
-        articles.push({
+        let articleData = {
           title,
-          link: extractActualUrl(link),
-          description: description || null,
+          original_link: link,
+          description: description ? description.replace(/<[^>]*>/g, '').trim() : null,
           published: pubDate || null,
-          source: source || null
-        });
+          source: source || null,
+          content: null,
+          images: null,
+          resolved_url: null
+        };
+
+        // If includeContent is true, fetch the full article content
+        if (includeContent) {
+          try {
+            console.log(`Fetching content for article ${i + 1}: ${title.substring(0, 50)}...`);
+            
+            // Try to resolve the Google News URL to actual article URL
+            let actualUrl = await resolveGoogleNewsUrl(link);
+            
+            // If still a Google News URL, try to extract from the link structure
+            if (actualUrl.includes('news.google.com')) {
+              // Skip Google News internal URLs for now
+              console.log('Skipping Google News internal URL');
+              articleData.error = 'Google News internal URL - cannot resolve to original source';
+            } else {
+              articleData.resolved_url = actualUrl;
+              
+              // Fetch the actual article content
+              const contentData = await scrapeOriginalArticle(actualUrl);
+              articleData.content = contentData.content;
+              articleData.images = contentData.images;
+              articleData.timestamp = contentData.timestamp;
+              
+              // Add a small delay to avoid overwhelming servers
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          } catch (error) {
+            console.log(`Failed to fetch content for article: ${error.message}`);
+            articleData.error = `Failed to fetch content: ${error.message}`;
+          }
+        }
+
+        articles.push(articleData);
       }
-    });
+    }
 
     return articles;
   } catch (error) {
@@ -104,7 +188,7 @@ async function getGoogleNewsRSS(query = 'india', lang = 'en', country = 'IN') {
   }
 }
 
-// Scrape article from original source
+// Enhanced article scraping with better selectors
 async function scrapeOriginalArticle(url) {
   const maxRetries = 2;
   let lastError;
@@ -112,7 +196,7 @@ async function scrapeOriginalArticle(url) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const response = await axios.get(url, {
-        timeout: 15000,
+        timeout: 20000,
         headers: {
           'User-Agent': getRandomUserAgent(),
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -120,102 +204,182 @@ async function scrapeOriginalArticle(url) {
           'Accept-Encoding': 'gzip, deflate, br',
           'DNT': '1',
           'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1'
+          'Upgrade-Insecure-Requests': '1',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
         },
         maxRedirects: 5
       });
 
       const $ = cheerio.load(response.data);
+      const hostname = new URL(url).hostname;
       
       // Remove unwanted elements
-      $('script, style, nav, header, footer, .advertisement, .ads, .social-share, .related-articles').remove();
+      $('script, style, nav, header, footer, .advertisement, .ads, .social-share, .related-articles, .comments, iframe, .video-player').remove();
 
-      // Extract title
-      const title = $('h1').first().text().trim() || 
-                   $('title').text().replace(/\s*\|\s*.*$/, '').trim() ||
-                   $('[property="og:title"]').attr('content') ||
-                   '';
+      // Extract title with priority order
+      let title = '';
+      const titleSelectors = [
+        'h1[class*="headline"]',
+        'h1[class*="title"]',
+        'h1[class*="story"]',
+        '[property="og:title"]',
+        'h1',
+        'title'
+      ];
 
-      // Extract content using multiple selectors
+      for (const selector of titleSelectors) {
+        if (selector === '[property="og:title"]') {
+          title = $(selector).attr('content');
+        } else if (selector === 'title') {
+          title = $(selector).text().replace(/\s*\|\s*.*$/, '').trim();
+        } else {
+          title = $(selector).first().text().trim();
+        }
+        if (title && title.length > 10) break;
+      }
+
+      // Extract content with comprehensive selectors
       const contentSelectors = [
-        'article p',
-        '.article-content p',
-        '.story-content p',
-        '.content p',
-        '.post-content p',
-        '.entry-content p',
-        'main p',
-        '[data-module="ArticleBody"] p',
-        '.article-body p'
+        '[data-module="ArticleBody"]',
+        '.article-content',
+        '.story-content',
+        '.content',
+        '.post-content',
+        '.entry-content',
+        '.article-body',
+        '.story-body',
+        'main article',
+        'article',
+        '.news-content',
+        '.article-text',
+        '.story-text'
       ];
 
       let content = '';
+      let foundContent = false;
+
       for (const selector of contentSelectors) {
-        const paragraphs = $(selector);
-        if (paragraphs.length > 0) {
-          paragraphs.each((i, p) => {
-            const text = $(p).text().trim();
-            if (text.length > 20) { // Only include substantial paragraphs
-              content += text + '\n\n';
+        const contentDiv = $(selector).first();
+        if (contentDiv.length > 0) {
+          // Find all paragraph tags within this content area
+          const paragraphs = contentDiv.find('p, div.paragraph, .story-element-text');
+          
+          if (paragraphs.length > 0) {
+            paragraphs.each((i, p) => {
+              const text = $(p).text().trim();
+              if (text.length > 30 && !text.toLowerCase().includes('advertisement')) {
+                content += text + '\n\n';
+              }
+            });
+            
+            if (content.length > 200) {
+              foundContent = true;
+              break;
             }
-          });
-          if (content.length > 100) break; // Stop if we found good content
+          }
         }
       }
 
-      // Extract images
-      const images = [];
-      $('img').each((i, img) => {
-        const src = $(img).attr('src') || $(img).attr('data-src');
-        if (src && !src.includes('logo') && !src.includes('icon') && src.length > 20) {
-          try {
-            const fullUrl = new URL(src, url).href;
-            if (!images.includes(fullUrl)) {
-              images.push(fullUrl);
-            }
-          } catch (e) {
-            // Skip invalid URLs
+      // Fallback: try to get any substantial paragraphs
+      if (!foundContent) {
+        $('p').each((i, p) => {
+          const text = $(p).text().trim();
+          if (text.length > 50 && !text.toLowerCase().includes('advertisement') && !text.toLowerCase().includes('subscribe')) {
+            content += text + '\n\n';
           }
-        }
+        });
+      }
+
+      // Extract images with better filtering
+      const images = [];
+      const imgSelectors = [
+        'img[class*="article"]',
+        'img[class*="story"]',
+        'img[class*="content"]',
+        'img[class*="featured"]',
+        'figure img',
+        '.image-container img',
+        'img'
+      ];
+
+      imgSelectors.forEach(selector => {
+        $(selector).each((i, img) => {
+          const src = $(img).attr('src') || $(img).attr('data-src') || $(img).attr('data-lazy-src');
+          const alt = $(img).attr('alt') || '';
+          
+          if (src && 
+              !src.includes('logo') && 
+              !src.includes('icon') && 
+              !src.includes('avatar') &&
+              !src.includes('placeholder') &&
+              !alt.toLowerCase().includes('logo') &&
+              src.length > 20) {
+            try {
+              const fullUrl = new URL(src, url).href;
+              if (!images.includes(fullUrl) && images.length < 10) {
+                images.push(fullUrl);
+              }
+            } catch (e) {
+              // Skip invalid URLs
+            }
+          }
+        });
       });
 
-      // Extract timestamp
+      // Extract timestamp with multiple methods
       let timestamp = null;
-      const timeElement = $('time[datetime]').first();
-      if (timeElement.length) {
-        const datetime = timeElement.attr('datetime');
-        if (datetime) {
-          const date = new Date(datetime);
-          if (!isNaN(date.getTime())) {
-            timestamp = date.toISOString();
+      const timeSelectors = [
+        'time[datetime]',
+        '[property="article:published_time"]',
+        '[name="publishdate"]',
+        '[name="date"]',
+        '.published-date',
+        '.article-date',
+        '.story-date',
+        '.timestamp'
+      ];
+
+      for (const selector of timeSelectors) {
+        const element = $(selector).first();
+        if (element.length) {
+          let dateStr = '';
+          if (selector.startsWith('[')) {
+            dateStr = element.attr('content') || element.attr('datetime');
+          } else {
+            dateStr = element.attr('datetime') || element.text().trim();
+          }
+          
+          if (dateStr) {
+            const date = new Date(dateStr);
+            if (!isNaN(date.getTime())) {
+              timestamp = date.toISOString();
+              break;
+            }
           }
         }
       }
 
-      // Extract from meta tags if time element not found
-      if (!timestamp) {
-        const metaDate = $('meta[property="article:published_time"]').attr('content') ||
-                        $('meta[name="publishdate"]').attr('content');
-        if (metaDate) {
-          const date = new Date(metaDate);
-          if (!isNaN(date.getTime())) {
-            timestamp = date.toISOString();
-          }
-        }
+      // Validate that we got meaningful content
+      if (!title && content.length < 100) {
+        throw new Error('Insufficient content extracted - possible blocking or paywall');
       }
 
       return {
         title: title || null,
         content: content.trim() || null,
-        images: images.length > 0 ? images.slice(0, 5) : null, // Limit to 5 images
+        images: images.length > 0 ? images : null,
         timestamp,
-        source_url: url
+        source_url: url,
+        word_count: content.split(' ').length
       };
 
     } catch (error) {
       lastError = error;
+      console.log(`Article scraping attempt ${attempt} failed for ${url}: ${error.message}`);
+      
       if (attempt < maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
   }
@@ -228,12 +392,14 @@ async function scrapeGoogleNews(url, options = {}) {
   try {
     // If it's a Google News RSS request
     if (url === 'rss' || url.includes('rss')) {
-      const articles = await getGoogleNewsRSS(options.query, options.lang, options.country);
+      const includeContent = options.includeContent !== false; // Default to true
+      const articles = await getGoogleNewsRSS(options.query, options.lang, options.country, includeContent);
       return {
         success: true,
         data: {
-          type: 'rss_feed',
-          articles: articles.slice(0, 10), // Limit to 10 articles
+          type: 'rss_feed_with_content',
+          query: options.query || 'india',
+          articles: articles,
           total: articles.length,
           scraped_at: new Date().toISOString()
         }
@@ -241,14 +407,29 @@ async function scrapeGoogleNews(url, options = {}) {
     }
 
     // Extract actual article URL if it's a Google News link
-    const actualUrl = extractActualUrl(url);
+    const actualUrl = extractRealArticleUrl(url);
     
-    // If it's still a Google News article URL, we need to get the RSS and find it
+    // If it's still a Google News article URL, try to resolve it
     if (actualUrl.includes('news.google.com/articles/')) {
-      return {
-        success: false,
-        error: 'Direct Google News article URLs are not accessible. Please use the RSS feed option or provide the original article URL.'
-      };
+      const resolvedUrl = await resolveGoogleNewsUrl(actualUrl);
+      if (resolvedUrl !== actualUrl) {
+        const articleData = await scrapeOriginalArticle(resolvedUrl);
+        return {
+          success: true,
+          data: {
+            type: 'article',
+            url: resolvedUrl,
+            original_google_url: url,
+            ...articleData,
+            scraped_at: new Date().toISOString()
+          }
+        };
+      } else {
+        return {
+          success: false,
+          error: 'Unable to resolve Google News URL to original article source'
+        };
+      }
     }
 
     // Scrape the actual article
@@ -273,11 +454,26 @@ async function scrapeGoogleNews(url, options = {}) {
 // Main API route
 app.get('/api/scrape', async (req, res) => {
   try {
-    const { url, query = 'india', lang = 'en', country = 'IN', type = 'article' } = req.query;
+    const { 
+      url, 
+      query = 'india', 
+      lang = 'en', 
+      country = 'IN', 
+      type = 'article',
+      include_content = 'true',
+      limit = '5'
+    } = req.query;
 
-    // Handle RSS feed requests
+    // Handle RSS feed requests with full content
     if (type === 'rss' || url === 'rss') {
-      const result = await scrapeGoogleNews('rss', { query, lang, country });
+      const includeContent = include_content.toLowerCase() !== 'false';
+      const result = await scrapeGoogleNews('rss', { 
+        query, 
+        lang, 
+        country, 
+        includeContent,
+        limit: parseInt(limit) 
+      });
       return res.json(result);
     }
 
@@ -285,7 +481,12 @@ app.get('/api/scrape', async (req, res) => {
     if (!url) {
       return res.status(400).json({
         success: false,
-        error: 'URL parameter is required. Use type=rss for RSS feed or provide a Google News URL.'
+        error: 'URL parameter is required. Use type=rss for RSS feed with full content, or provide a news article URL.',
+        examples: {
+          rss_with_content: '/api/scrape?type=rss&query=technology&include_content=true',
+          rss_links_only: '/api/scrape?type=rss&query=sports&include_content=false',
+          single_article: '/api/scrape?url=ARTICLE_URL'
+        }
       });
     }
 
@@ -316,6 +517,9 @@ app.get('/api/scrape', async (req, res) => {
     } else if (error.code === 'ENOTFOUND') {
       errorMessage = 'Unable to connect to the source website.';
       statusCode = 400;
+    } else if (error.message.includes('timeout')) {
+      errorMessage = 'Request timeout. The operation took too long.';
+      statusCode = 408;
     }
 
     res.status(statusCode).json({
