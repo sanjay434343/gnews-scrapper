@@ -1,17 +1,10 @@
-// index.js
-import express from 'express';
 import axios from 'axios';
 import cheerio from 'cheerio';
-
-const app = express();
-const PORT = process.env.PORT || 3000;
 
 const extractFullArticle = async (url) => {
   try {
     const { data } = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0' }
     });
     const $ = cheerio.load(data);
     const paragraphs = $('article p').map((i, el) => $(el).text()).get();
@@ -71,7 +64,7 @@ const resolveGoogleRedirect = async (gnews_url) => {
   }
 };
 
-app.get('/api/news', async (req, res) => {
+export default async function handler(req, res) {
   const { q } = req.query;
   if (!q) return res.status(400).json({ error: 'Missing query param ?q=' });
 
@@ -84,9 +77,5 @@ app.get('/api/news', async (req, res) => {
     })
   );
 
-  res.json(resultsWithContent);
-});
-
-app.listen(PORT, () => {
-  console.log(`📰 Google News API running at http://localhost:${PORT}`);
-});
+  res.status(200).json(resultsWithContent);
+}
