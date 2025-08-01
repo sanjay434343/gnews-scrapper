@@ -22,57 +22,15 @@ function isValidUrl(string) {
   }
 }
 
-// User agents for Google News
+// User agents for scraping
 const userAgents = [
-  'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 ];
 
 function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)];
-}
-
-// Enhanced URL resolver for Google News
-async function resolveGoogleNewsUrl(googleUrl) {
-  try {
-    const response = await axios.get(googleUrl, {
-      timeout: 10000,
-      maxRedirects: 0,
-      headers: { 'User-Agent': getRandomUserAgent() },
-      validateStatus: status => status >= 200 && status < 400
-    });
-
-    // Handle HTTP redirects
-    if (response.status >= 300 && response.status < 400 && response.headers.location) {
-      return new URL(response.headers.location, googleUrl).href;
-    }
-
-    // Parse HTML for redirects
-    const $ = cheerio.load(response.data);
-    
-    // Check meta refresh redirect
-    const metaRefresh = $('meta[http-equiv="refresh"]').attr('content');
-    if (metaRefresh) {
-      const urlMatch = metaRefresh.match(/url=(.*)$/i);
-      if (urlMatch && urlMatch[1]) {
-        return new URL(urlMatch[1], googleUrl).href;
-      }
-    }
-
-    // Check JavaScript redirects
-    const scriptRedirect = $('script').text().match(/window\.location\.(?:href|replace)\s*=\s*['"]([^'"]+)['"]/i);
-    if (scriptRedirect && scriptRedirect[1]) {
-      return new URL(scriptRedirect[1], googleUrl).href;
-    }
-
-    return googleUrl;
-  } catch (error) {
-    if (error.response?.headers?.location) {
-      return new URL(error.response.headers.location, googleUrl).href;
-    }
-    return googleUrl;
-  }
 }
 
 // Main scraping function
@@ -200,97 +158,6 @@ async function scrapeArticle(url) {
   }
 }
 
-// Google News RSS parser
-async function getGoogleNewsRSS(query = 'technology', lang = 'en', country = 'US') {
-  try {
-    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${lang}&gl=${country}`;
-    const response = await axios.get(rssUrl, {
-      timeout: 10000,
-      headers: { 'User-Agent': getRandomUserAgent() }
-    });
-
-    const $ = cheerio.load(response.data, { xmlMode: true });
-    const articles = [];
-
-    $('item').each((i, el) => {
-      const title = $(el).find('title').text().trim();
-      const link = $(el).find('link').text().trim();
-      const description = $(el).find('description').text().trim();
-      const pubDate = $(el).find('pubDate').text().trim();
-      const source = $(el).find('source').text().trim();
-
-      if (title && link) {
-        articles.push({
-          title,
-          original_link: link,
-          description: description.replace(/<[^>]*>/g, '').trim(),
-          published: pubDate,
-          source: source || 'Unknown source'
-        });
-      }
-    });
-
-    return articles.slice(0, 10);
-  } catch (error) {
-    throw new Error(`RSS fetch failed: ${error.message}`);
-  }
-}
-
-// Main API endpoint
-app.get('/api/news', async (req, res) => {
-  try {
-    const { 
-      query = 'technology', 
-      lang = 'en', 
-      country = 'US',
-      full_content = 'false'
-    } = req.query;
-
-    // Get RSS feed
-    const articles = await getGoogleNewsRSS(query, lang, country);
-    
-    // Resolve URLs and get full content if requested
-    if (full_content.toLowerCase() === 'true') {
-      for (const article of articles) {
-        try {
-          // Resolve Google News URL
-          let resolvedUrl = await resolveGoogleNewsUrl(article.original_link);
-          
-          // If still Google News URL, try parameter extraction
-          if (resolvedUrl.includes('news.google.com')) {
-            const urlParams = new URL(resolvedUrl).searchParams;
-            resolvedUrl = urlParams.get('url') || resolvedUrl;
-          }
-          
-          // Scrape actual article
-          const content = await scrapeArticle(resolvedUrl);
-          article.content = content.content;
-          article.images = content.images;
-          article.resolved_url = resolvedUrl;
-          
-          // Add delay between requests
-          await new Promise(resolve => setTimeout(resolve, 500));
-        } catch (error) {
-          article.error = `Content fetch failed: ${error.message}`;
-        }
-      }
-    }
-
-    res.json({
-      success: true,
-      query,
-      articles,
-      count: articles.length,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
 // Single article endpoint
 app.get('/api/article', async (req, res) => {
   try {
@@ -303,23 +170,9 @@ app.get('/api/article', async (req, res) => {
       });
     }
 
-    // Resolve Google News URLs
-    let targetUrl = url;
-    if (url.includes('news.google.com')) {
-      targetUrl = await resolveGoogleNewsUrl(url);
-      
-      // If still Google News URL, try parameter extraction
-      if (targetUrl.includes('news.google.com')) {
-        const urlParams = new URL(targetUrl).searchParams;
-        targetUrl = urlParams.get('url') || targetUrl;
-      }
-    }
-
-    const article = await scrapeArticle(targetUrl);
+    const article = await scrapeArticle(url);
     res.json({
       success: true,
-      original_url: url,
-      resolved_url: targetUrl,
       ...article
     });
   } catch (error) {
@@ -334,7 +187,7 @@ app.get('/api/article', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    service: 'News Scraper API',
+    service: 'Article Scraper API',
     timestamp: new Date().toISOString() 
   });
 });
@@ -342,5 +195,5 @@ app.get('/api/health', (req, res) => {
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`News Scraper API running on port ${PORT}`);
+  console.log(`Article Scraper API running on port ${PORT}`);
 });
